@@ -7,7 +7,7 @@
 ## Статус
 
 - [x] Фаза 0 — скелет репозитория
-- [ ] Фаза 1 — Core Service MVP (REST + Postgres)
+- [x] Фаза 1 — Core Service MVP (REST + Postgres)
 - [ ] Фаза 2 — Docker + Compose + CI baseline
 - [ ] Фаза 3 — Redis-кеш
 - [ ] Фаза 4 — API Gateway + gRPC
