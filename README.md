@@ -8,7 +8,7 @@
 
 - [x] Фаза 0 — скелет репозитория
 - [x] Фаза 1 — Core Service MVP (REST + Postgres)
-- [ ] Фаза 2 — Docker + Compose + CI baseline
+- [x] Фаза 2 — Docker + Compose + CI baseline
 - [ ] Фаза 3 — Redis-кеш
 - [ ] Фаза 4 — API Gateway + gRPC
 - [ ] Фаза 5 — RabbitMQ + Stat Service
@@ -17,7 +17,17 @@
 
 ## Запуск
 
-_Появится начиная с Фазы 2 (`docker-compose up`)._
+```
+cp .env.example .env
+make up
+```
+
+Поднимет Postgres, применит миграции и запустит Core Service с hot-reload (правки в `.go`-файлах подхватываются автоматически, без пересборки образа). Сервис слушает `:8080`.
+
+Прод-эквивалентная сборка (без hot-reload, тот же образ, что уйдёт в прод):
+```
+make prod-up
+```
 
 ## Разработка
 

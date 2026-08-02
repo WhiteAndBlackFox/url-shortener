@@ -1,0 +1,14 @@
+# Auto-loaded by `docker compose up` (no flags needed) on top of
+# docker-compose.yml. Switches coreservice to the "dev" build stage
+# (air hot-reload) and bind-mounts the source so edits on the host
+# are picked up immediately inside the container.
+#
+# To run the lean, production-equivalent build instead (no hot reload,
+# what actually ships), explicitly exclude this file:
+#   docker compose -f docker-compose.yml up --build
+services:
+  coreservice:
+    build:
+      target: dev
+    volumes:
+      - .:/src

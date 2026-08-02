@@ -24,7 +24,7 @@ func main() {
 	if err != nil {
 		panic(err) // logger itself failed to construct; nothing to log to yet
 	}
-	defer log.Sync()
+	defer func() { _ = log.Sync() }()
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
