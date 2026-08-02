@@ -1,0 +1,9 @@
+.git
+.idea
+.github
+bin
+tmp
+plans
+*.md
+.env
+.env.example

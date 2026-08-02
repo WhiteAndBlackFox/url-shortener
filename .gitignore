@@ -23,6 +23,11 @@ go.work.sum
 # Env files
 .env
 .env.*
+!.env.example
+
+# Air (hot-reload dev tool) artifacts
+tmp/
+build-errors.log
 
 # IDE
 .idea/
