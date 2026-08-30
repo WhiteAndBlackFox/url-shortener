@@ -9,8 +9,7 @@ import (
 )
 
 // Recovery recovers from panics in downstream handlers, logs them, and
-// responds with 500 instead of letting the process crash. This is what
-// backs the plan's "no panics reach the client" requirement.
+// responds with 500 instead of letting the process crash.
 func Recovery(log *zap.Logger) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		defer func() {

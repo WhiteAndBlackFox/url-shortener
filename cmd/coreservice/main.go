@@ -2,14 +2,13 @@ package main
 
 import (
 	"context"
-	"net/http"
+	"net"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"URLShortener/internal/cache"
 	"URLShortener/internal/coreservice/repository/postgres"
-	httpapi "URLShortener/internal/coreservice/transport/http"
+	coregrpc "URLShortener/internal/coreservice/transport/grpc"
 	"URLShortener/internal/link"
 	"URLShortener/internal/platform/config"
 	"URLShortener/internal/platform/logger"
@@ -20,7 +19,7 @@ import (
 )
 
 func main() {
-	cfg := config.Load()
+	cfg := config.LoadCore()
 
 	log, err := logger.New(cfg.Debug)
 	if err != nil {
@@ -44,28 +43,22 @@ func main() {
 	repo := postgres.New(db)
 	cachedRepo := cache.NewLinkRepository(repo, redisClient, cfg.CacheTTL, log)
 	service := link.NewService(cachedRepo)
-	handler := httpapi.NewHandler(service, cfg.BaseURL, log)
-	router := httpapi.NewRouter(handler, log)
+	linkServer := coregrpc.NewLinkServer(service)
+	grpcServer := coregrpc.NewServer(linkServer, log)
 
-	srv := &http.Server{
-		Addr:    cfg.HTTPAddr,
-		Handler: router,
+	lis, err := net.Listen("tcp", cfg.GRPCAddr)
+	if err != nil {
+		log.Fatal("listen", zap.Error(err))
 	}
 
 	go func() {
-		log.Info("starting core service", zap.String("addr", cfg.HTTPAddr))
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatal("http server", zap.Error(err))
+		log.Info("starting core service", zap.String("addr", cfg.GRPCAddr))
+		if err := grpcServer.Serve(lis); err != nil {
+			log.Fatal("grpc server", zap.Error(err))
 		}
 	}()
 
 	<-ctx.Done()
 	log.Info("shutting down")
-
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	if err := srv.Shutdown(shutdownCtx); err != nil {
-		log.Error("graceful shutdown failed", zap.Error(err))
-	}
+	grpcServer.GracefulStop()
 }

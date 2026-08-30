@@ -12,3 +12,9 @@ services:
       target: dev
     volumes:
       - .:/src
+
+  gateway:
+    build:
+      target: dev
+    volumes:
+      - .:/src

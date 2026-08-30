@@ -5,7 +5,9 @@ import (
 	"go.uber.org/zap"
 )
 
-// NewRouter wires routes and middleware for the Core Service HTTP API.
+// NewRouter wires routes and middleware for the public Gateway HTTP API.
+// This is now the ONLY public HTTP surface in the system — Core Service is
+// gRPC-only and unreachable directly by end users.
 //
 // Route ordering note: "/links/:code" (static "links" segment + param) and
 // "/:code" (a bare param at the root) can coexist — Gin's router matches

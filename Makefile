@@ -1,4 +1,4 @@
-.PHONY: build run test lint fmt vet up prod-up down migrate-up migrate-down
+.PHONY: build proto test lint fmt vet up prod-up down migrate-up migrate-down
 
 # Loads POSTGRES_*/DATABASE_URL/TEST_DATABASE_URL from .env (see .env.example)
 # and exports them to every recipe below. Run `cp .env.example .env` first.
@@ -7,9 +7,17 @@ export
 
 build:
 	go build -o bin/coreservice ./cmd/coreservice
+	go build -o bin/gateway ./cmd/gateway
 
-run: build
-	./bin/coreservice
+## Regenerates api/proto/linkpb from api/proto/link.proto. Requires protoc
+## (system package) plus protoc-gen-go/protoc-gen-go-grpc (go install, see
+## README). Generated code is committed, so this only needs to be run when
+## link.proto changes - CI and Docker builds never need protoc.
+proto:
+	protoc \
+		--go_out=. --go_opt=module=URLShortener \
+		--go-grpc_out=. --go-grpc_opt=module=URLShortener \
+		api/proto/link.proto
 
 test:
 	go test ./... -v

@@ -33,6 +33,9 @@ jobs:
         with:
           go-version: "1.26"
 
+      - name: Build
+        run: make build
+
       - name: Vet
         run: go vet ./...
 

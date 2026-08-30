@@ -16,8 +16,8 @@ FROM base AS dev
 
 RUN go install github.com/air-verse/air@latest
 
-EXPOSE 8080
-CMD ["air", "-c", ".air.toml"]
+EXPOSE 9090
+CMD ["air", "-c", ".air.coreservice.toml"]
 
 ## builder: base + full source, compiles a static binary for the runtime stage.
 FROM base AS builder
@@ -38,6 +38,6 @@ RUN apk add --no-cache ca-certificates && \
 COPY --from=builder /out/coreservice /usr/local/bin/coreservice
 
 USER appuser
-EXPOSE 8080
+EXPOSE 9090
 
 ENTRYPOINT ["/usr/local/bin/coreservice"]

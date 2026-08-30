@@ -49,14 +49,13 @@ services:
       dockerfile: deployments/docker/coreservice.Dockerfile
       target: runtime
     environment:
-      HTTP_ADDR: ${HTTP_ADDR}
+      GRPC_ADDR: ${GRPC_ADDR}
       DATABASE_URL: ${DATABASE_URL}
-      BASE_URL: ${BASE_URL}
       DEBUG: ${DEBUG}
       REDIS_ADDR: redis:6379
       CACHE_TTL_SECONDS: ${CACHE_TTL_SECONDS}
     ports:
-      - "8080:8080"
+      - "9090:9090" # published for local debugging (e.g. grpcurl); not needed by gateway, which reaches coreservice via the internal network
     networks:
       - urlshortner
     depends_on:
@@ -64,6 +63,23 @@ services:
         condition: service_completed_successfully
       redis:
         condition: service_healthy
+
+  gateway:
+    build:
+      context: .
+      dockerfile: deployments/docker/gateway.Dockerfile
+      target: runtime
+    environment:
+      HTTP_ADDR: ${HTTP_ADDR}
+      CORE_GRPC_ADDR: coreservice:9090
+      BASE_URL: ${BASE_URL}
+      DEBUG: ${DEBUG}
+    ports:
+      - "8080:8080"
+    networks:
+      - urlshortner
+    depends_on:
+      - coreservice
 
 volumes:
   pgdata:

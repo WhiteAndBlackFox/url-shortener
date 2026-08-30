@@ -1,0 +1,30 @@
+syntax = "proto3";
+
+package link.v1;
+
+option go_package = "URLShortener/api/proto/linkpb;linkpb";
+
+import "google/protobuf/timestamp.proto";
+
+// LinkService is the internal contract between the API Gateway and the
+// Core Service. It intentionally mirrors link.Service's two operations
+// (create, resolve) — the domain logic itself stays in Core, this is
+// just how Gateway reaches it over the network.
+service LinkService {
+  rpc CreateLink(CreateLinkRequest) returns (Link);
+  rpc GetLink(GetLinkRequest) returns (Link);
+}
+
+message CreateLinkRequest {
+  string url = 1;
+}
+
+message GetLinkRequest {
+  string code = 1;
+}
+
+message Link {
+  string code = 1;
+  string long_url = 2;
+  google.protobuf.Timestamp created_at = 3;
+}
