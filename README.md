@@ -9,7 +9,7 @@
 - [x] Фаза 0 — скелет репозитория
 - [x] Фаза 1 — Core Service MVP (REST + Postgres)
 - [x] Фаза 2 — Docker + Compose + CI baseline
-- [ ] Фаза 3 — Redis-кеш
+- [x] Фаза 3 — Redis-кеш
 - [ ] Фаза 4 — API Gateway + gRPC
 - [ ] Фаза 5 — RabbitMQ + Stat Service
 - [ ] Фаза 6 — Сквозное укрепление (тесты, логирование, health-checks)

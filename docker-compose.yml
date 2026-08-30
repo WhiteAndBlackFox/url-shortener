@@ -17,6 +17,18 @@ services:
       timeout: 5s
       retries: 10
 
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    networks:
+      - urlshortner
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   migrate:
     image: migrate/migrate:v4.19.1
     volumes:
@@ -41,6 +53,8 @@ services:
       DATABASE_URL: ${DATABASE_URL}
       BASE_URL: ${BASE_URL}
       DEBUG: ${DEBUG}
+      REDIS_ADDR: redis:6379
+      CACHE_TTL_SECONDS: ${CACHE_TTL_SECONDS}
     ports:
       - "8080:8080"
     networks:
@@ -48,6 +62,8 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
+      redis:
+        condition: service_healthy
 
 volumes:
   pgdata:

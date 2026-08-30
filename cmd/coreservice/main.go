@@ -7,12 +7,14 @@ import (
 	"syscall"
 	"time"
 
+	"URLShortener/internal/cache"
 	"URLShortener/internal/coreservice/repository/postgres"
 	httpapi "URLShortener/internal/coreservice/transport/http"
 	"URLShortener/internal/link"
 	"URLShortener/internal/platform/config"
 	"URLShortener/internal/platform/logger"
 	platformpg "URLShortener/internal/platform/postgres"
+	platformredis "URLShortener/internal/platform/redis"
 
 	"go.uber.org/zap"
 )
@@ -34,8 +36,14 @@ func main() {
 		log.Fatal("connect to postgres", zap.Error(err))
 	}
 
+	redisClient, err := platformredis.NewClient(ctx, cfg.RedisAddr)
+	if err != nil {
+		log.Fatal("connect to redis", zap.Error(err))
+	}
+
 	repo := postgres.New(db)
-	service := link.NewService(repo)
+	cachedRepo := cache.NewLinkRepository(repo, redisClient, cfg.CacheTTL, log)
+	service := link.NewService(cachedRepo)
 	handler := httpapi.NewHandler(service, cfg.BaseURL, log)
 	router := httpapi.NewRouter(handler, log)
 
