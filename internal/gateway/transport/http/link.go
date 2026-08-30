@@ -37,14 +37,19 @@ func NewHandler(client linkpb.LinkServiceClient, baseURL string, log *zap.Logger
 }
 
 type createLinkRequest struct {
-	URL string `json:"url" binding:"required"`
+	URL string `json:"url" binding:"required" example:"https://example.com/some/long/path"`
 }
 
 type linkResponse struct {
-	Code      string    `json:"code"`
-	ShortURL  string    `json:"short_url"`
-	LongURL   string    `json:"long_url"`
+	Code      string    `json:"code" example:"abc1234"`
+	ShortURL  string    `json:"short_url" example:"http://localhost:8080/abc1234"`
+	LongURL   string    `json:"long_url" example:"https://example.com/some/long/path"`
 	CreatedAt time.Time `json:"created_at"`
+}
+
+// errorResponse is the JSON body returned for every non-2xx response.
+type errorResponse struct {
+	Error string `json:"error" example:"link: not found"`
 }
 
 func (h *Handler) newLinkResponse(l *linkpb.Link) linkResponse {
@@ -56,11 +61,22 @@ func (h *Handler) newLinkResponse(l *linkpb.Link) linkResponse {
 	}
 }
 
-// CreateLink handles POST /links.
+// CreateLink creates a short link.
+//
+//	@Summary		Create a short link
+//	@Description	Validates the URL and returns a newly created short code.
+//	@Tags			links
+//	@Accept			json
+//	@Produce		json
+//	@Param			request	body		createLinkRequest	true	"URL to shorten"
+//	@Success		201		{object}	linkResponse
+//	@Failure		400		{object}	errorResponse	"invalid request body or URL"
+//	@Failure		500		{object}	errorResponse
+//	@Router			/links [post]
 func (h *Handler) CreateLink(c *gin.Context) {
 	var req createLinkRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		c.JSON(http.StatusBadRequest, errorResponse{Error: "invalid request body"})
 		return
 	}
 
@@ -74,7 +90,15 @@ func (h *Handler) CreateLink(c *gin.Context) {
 	c.JSON(http.StatusCreated, h.newLinkResponse(l))
 }
 
-// Redirect handles GET /:code — the hot path that sends the client to the long URL.
+// Redirect sends the client to the long URL behind a short code.
+//
+//	@Summary		Redirect to the long URL
+//	@Description	The hot path: resolves a short code and redirects the client. Also publishes a click event to RabbitMQ, asynchronously.
+//	@Tags			links
+//	@Param			code	path	string	true	"Short code"
+//	@Success		302
+//	@Failure		404	{object}	errorResponse
+//	@Router			/{code} [get]
 func (h *Handler) Redirect(c *gin.Context) {
 	code := c.Param("code")
 
@@ -116,7 +140,16 @@ func (h *Handler) publishClickAsync(requestID, code, ip, userAgent string) {
 	}()
 }
 
-// GetLinkInfo handles GET /links/:code.
+// GetLinkInfo returns metadata about a short link.
+//
+//	@Summary		Get link info
+//	@Description	Returns the short code, long URL and creation time — does not redirect.
+//	@Tags			links
+//	@Produce		json
+//	@Param			code	path		string	true	"Short code"
+//	@Success		200		{object}	linkResponse
+//	@Failure		404		{object}	errorResponse
+//	@Router			/links/{code} [get]
 func (h *Handler) GetLinkInfo(c *gin.Context) {
 	code := c.Param("code")
 
@@ -140,11 +173,11 @@ func (h *Handler) handleRPCError(c *gin.Context, err error) {
 
 	switch st.Code() {
 	case codes.InvalidArgument:
-		c.JSON(http.StatusBadRequest, gin.H{"error": st.Message()})
+		c.JSON(http.StatusBadRequest, errorResponse{Error: st.Message()})
 	case codes.NotFound:
-		c.JSON(http.StatusNotFound, gin.H{"error": st.Message()})
+		c.JSON(http.StatusNotFound, errorResponse{Error: st.Message()})
 	default:
 		h.log.Error("core service rpc failed", zap.Error(err))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		c.JSON(http.StatusInternalServerError, errorResponse{Error: "internal server error"})
 	}
 }

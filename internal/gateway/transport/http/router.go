@@ -1,9 +1,11 @@
 package httpapi
 
 import (
-	"net/http"
+	_ "URLShortener/api/openapi" // side effect: registers the generated OpenAPI spec with swaggo
 
 	"github.com/gin-gonic/gin"
+	swaggerFiles "github.com/swaggo/files"
+	ginSwagger "github.com/swaggo/gin-swagger"
 	"go.uber.org/zap"
 )
 
@@ -11,20 +13,18 @@ import (
 // This is now the ONLY public HTTP surface in the system — Core Service and
 // Stat Service are both gRPC-only and unreachable directly by end users.
 //
-// Route ordering note: static routes ("/health", "/links/:code", etc.) and
-// "/:code" (a bare param at the root) can coexist — Gin's router matches
-// static segments before falling back to a wildcard, so e.g. a request for
-// "/health" is routed to the health check, not treated as Redirect with
-// code="health". "/links/:code/stats" is more specific still and matches
-// before the two-segment "/links/:code" route.
+// Route ordering note: static routes ("/health", "/swagger", "/links/:code",
+// etc.) and "/:code" (a bare param at the root) can coexist — Gin's router
+// matches static segments before falling back to a wildcard, so e.g. a
+// request for "/health" is routed to the health check, not treated as
+// Redirect with code="health". "/links/:code/stats" is more specific still
+// and matches before the two-segment "/links/:code" route.
 func NewRouter(h *Handler, statsHandler *StatsHandler, log *zap.Logger) *gin.Engine {
 	r := gin.New()
 	r.Use(Recovery(log), RequestID(), RequestLogger(log))
 
-	// Liveness only (is the process up and able to serve HTTP) — deliberately
-	// does not check Core/Stat Service reachability, so a downstream outage
-	// doesn't cause Gateway itself to be marked unhealthy and restarted.
-	r.GET("/health", func(c *gin.Context) { c.Status(http.StatusOK) })
+	r.GET("/health", HealthCheck)
+	r.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
 
 	r.POST("/links", h.CreateLink)
 	r.GET("/links/:code", h.GetLinkInfo)

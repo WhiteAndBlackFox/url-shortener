@@ -1,0 +1,159 @@
+basePath: /
+definitions:
+  internal_gateway_transport_http.createLinkRequest:
+    properties:
+      url:
+        example: https://example.com/some/long/path
+        type: string
+    required:
+    - url
+    type: object
+  internal_gateway_transport_http.errorResponse:
+    properties:
+      error:
+        example: 'link: not found'
+        type: string
+    type: object
+  internal_gateway_transport_http.linkResponse:
+    properties:
+      code:
+        example: abc1234
+        type: string
+      created_at:
+        type: string
+      long_url:
+        example: https://example.com/some/long/path
+        type: string
+      short_url:
+        example: http://localhost:8080/abc1234
+        type: string
+    type: object
+  internal_gateway_transport_http.statsResponse:
+    properties:
+      code:
+        example: abc1234
+        type: string
+      last_clicked_at:
+        type: string
+      total_clicks:
+        example: 42
+        type: integer
+    type: object
+info:
+  contact: {}
+  description: Public REST API for the URL Shortener project. This is the only public
+    HTTP surface in the system — Core Service and Stat Service are internal, gRPC-only,
+    and reached through this Gateway.
+  title: URL Shortener API
+  version: "1.0"
+paths:
+  /{code}:
+    get:
+      description: 'The hot path: resolves a short code and redirects the client.
+        Also publishes a click event to RabbitMQ, asynchronously.'
+      parameters:
+      - description: Short code
+        in: path
+        name: code
+        required: true
+        type: string
+      responses:
+        "302":
+          description: Found
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/internal_gateway_transport_http.errorResponse'
+      summary: Redirect to the long URL
+      tags:
+      - links
+  /health:
+    get:
+      description: Liveness only — deliberately does not check Core/Stat Service reachability,
+        so a downstream outage doesn't cause Gateway itself to be marked unhealthy
+        and restarted.
+      responses:
+        "200":
+          description: OK
+      summary: Health check
+      tags:
+      - health
+  /links:
+    post:
+      consumes:
+      - application/json
+      description: Validates the URL and returns a newly created short code.
+      parameters:
+      - description: URL to shorten
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/internal_gateway_transport_http.createLinkRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/internal_gateway_transport_http.linkResponse'
+        "400":
+          description: invalid request body or URL
+          schema:
+            $ref: '#/definitions/internal_gateway_transport_http.errorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/internal_gateway_transport_http.errorResponse'
+      summary: Create a short link
+      tags:
+      - links
+  /links/{code}:
+    get:
+      description: Returns the short code, long URL and creation time — does not redirect.
+      parameters:
+      - description: Short code
+        in: path
+        name: code
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_gateway_transport_http.linkResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/internal_gateway_transport_http.errorResponse'
+      summary: Get link info
+      tags:
+      - links
+  /links/{code}/stats:
+    get:
+      description: Returns the total click count and last-clicked time for a short
+        code. Unknown codes report zero clicks rather than a 404 — Stat Service has
+        no way to know whether a code is a real short link.
+      parameters:
+      - description: Short code
+        in: path
+        name: code
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_gateway_transport_http.statsResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/internal_gateway_transport_http.errorResponse'
+      summary: Get click statistics
+      tags:
+      - stats
+swagger: "2.0"

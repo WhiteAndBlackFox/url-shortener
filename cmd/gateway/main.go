@@ -19,6 +19,10 @@ import (
 	"go.uber.org/zap"
 )
 
+// @title			URL Shortener API
+// @version		1.0
+// @description	Public REST API for the URL Shortener project. This is the only public HTTP surface in the system — Core Service and Stat Service are internal, gRPC-only, and reached through this Gateway.
+// @BasePath		/
 func main() {
 	cfg := config.LoadGateway()
 

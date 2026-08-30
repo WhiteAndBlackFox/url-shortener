@@ -23,12 +23,21 @@ func NewStatsHandler(client statspb.StatsServiceClient, log *zap.Logger) *StatsH
 }
 
 type statsResponse struct {
-	Code          string    `json:"code"`
-	TotalClicks   int64     `json:"total_clicks"`
+	Code          string    `json:"code" example:"abc1234"`
+	TotalClicks   int64     `json:"total_clicks" example:"42"`
 	LastClickedAt time.Time `json:"last_clicked_at,omitempty"`
 }
 
-// GetStats handles GET /links/:code/stats.
+// GetStats returns click statistics for a short link.
+//
+//	@Summary		Get click statistics
+//	@Description	Returns the total click count and last-clicked time for a short code. Unknown codes report zero clicks rather than a 404 — Stat Service has no way to know whether a code is a real short link.
+//	@Tags			stats
+//	@Produce		json
+//	@Param			code	path		string	true	"Short code"
+//	@Success		200		{object}	statsResponse
+//	@Failure		500		{object}	errorResponse
+//	@Router			/links/{code}/stats [get]
 func (h *StatsHandler) GetStats(c *gin.Context) {
 	code := c.Param("code")
 
@@ -36,7 +45,7 @@ func (h *StatsHandler) GetStats(c *gin.Context) {
 	resp, err := h.client.GetStats(ctx, &statspb.GetStatsRequest{Code: code})
 	if err != nil {
 		h.log.Error("stat service rpc failed", zap.Error(err))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		c.JSON(http.StatusInternalServerError, errorResponse{Error: "internal server error"})
 		return
 	}
 
