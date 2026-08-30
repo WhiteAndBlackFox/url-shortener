@@ -1,0 +1,25 @@
+syntax = "proto3";
+
+package stats.v1;
+
+option go_package = "URLShortener/api/proto/statspb;statspb";
+
+import "google/protobuf/timestamp.proto";
+
+// StatsService is the internal contract between the API Gateway and
+// Stat Service, mirroring how Gateway talks to Core Service (link.proto):
+// the aggregation logic stays in Stat Service, this is just the network
+// boundary Gateway uses to reach it.
+service StatsService {
+  rpc GetStats(GetStatsRequest) returns (StatsResponse);
+}
+
+message GetStatsRequest {
+  string code = 1;
+}
+
+message StatsResponse {
+  string code = 1;
+  int64 total_clicks = 2;
+  google.protobuf.Timestamp last_clicked_at = 3;
+}

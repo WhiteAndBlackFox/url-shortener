@@ -1,4 +1,4 @@
-package grpc
+package grpcmiddleware
 
 import (
 	"context"
@@ -10,10 +10,9 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// recoveryInterceptor recovers from panics in RPC handlers, logs them, and
-// returns codes.Internal instead of letting the process crash. This is the
-// gRPC equivalent of httpapi.Recovery from earlier phases.
-func recoveryInterceptor(log *zap.Logger) grpc.UnaryServerInterceptor {
+// Recovery recovers from panics in RPC handlers, logs them, and returns
+// codes.Internal instead of letting the process crash.
+func Recovery(log *zap.Logger) grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (resp any, err error) {
 		defer func() {
 			if rec := recover(); rec != nil {
@@ -28,11 +27,10 @@ func recoveryInterceptor(log *zap.Logger) grpc.UnaryServerInterceptor {
 	}
 }
 
-// loggingInterceptor logs method, gRPC status code and latency for every
-// call, and logs the underlying error for non-domain (Internal) failures —
-// the same "log the real cause, return a generic message to the caller"
-// split httpapi.handleServiceError did per-handler, centralized here instead.
-func loggingInterceptor(log *zap.Logger) grpc.UnaryServerInterceptor {
+// Logging logs method, gRPC status code and latency for every call, and
+// logs the underlying error for non-domain (Internal) failures — handlers
+// return a generic message to the caller, the real cause is logged here.
+func Logging(log *zap.Logger) grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (resp any, err error) {
 		start := time.Now()
 		resp, err = handler(ctx, req)

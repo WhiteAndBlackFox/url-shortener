@@ -8,16 +8,17 @@ export
 build:
 	go build -o bin/coreservice ./cmd/coreservice
 	go build -o bin/gateway ./cmd/gateway
+	go build -o bin/statservice ./cmd/statservice
 
-## Regenerates api/proto/linkpb from api/proto/link.proto. Requires protoc
-## (system package) plus protoc-gen-go/protoc-gen-go-grpc (go install, see
-## README). Generated code is committed, so this only needs to be run when
-## link.proto changes - CI and Docker builds never need protoc.
+## Regenerates api/proto/{linkpb,statspb} from api/proto/*.proto. Requires
+## protoc (system package) plus protoc-gen-go/protoc-gen-go-grpc (go install,
+## see README). Generated code is committed, so this only needs to be run
+## when a .proto file changes - CI and Docker builds never need protoc.
 proto:
 	protoc \
 		--go_out=. --go_opt=module=URLShortener \
 		--go-grpc_out=. --go-grpc_opt=module=URLShortener \
-		api/proto/link.proto
+		api/proto/link.proto api/proto/stats.proto
 
 test:
 	go test ./... -v

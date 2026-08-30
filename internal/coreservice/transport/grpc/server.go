@@ -2,6 +2,7 @@ package grpc
 
 import (
 	linkpb "URLShortener/api/proto/linkpb"
+	"URLShortener/internal/platform/grpcmiddleware"
 
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
@@ -11,7 +12,7 @@ import (
 // for the Core Service.
 func NewServer(linkServer *LinkServer, log *zap.Logger) *grpc.Server {
 	srv := grpc.NewServer(
-		grpc.ChainUnaryInterceptor(recoveryInterceptor(log), loggingInterceptor(log)),
+		grpc.ChainUnaryInterceptor(grpcmiddleware.Recovery(log), grpcmiddleware.Logging(log)),
 	)
 	linkpb.RegisterLinkServiceServer(srv, linkServer)
 	return srv

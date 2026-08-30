@@ -18,3 +18,9 @@ services:
       target: dev
     volumes:
       - .:/src
+
+  statservice:
+    build:
+      target: dev
+    volumes:
+      - .:/src

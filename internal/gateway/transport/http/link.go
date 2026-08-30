@@ -1,10 +1,12 @@
 package httpapi
 
 import (
+	"context"
 	"net/http"
 	"time"
 
 	linkpb "URLShortener/api/proto/linkpb"
+	"URLShortener/internal/stats"
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
@@ -12,18 +14,25 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+// clickPublisher is the narrow interface Handler needs from
+// publisher.ClickPublisher — defined here (by the consumer), not there.
+type clickPublisher interface {
+	Publish(ctx context.Context, ev stats.ClickEvent) error
+}
+
 // Handler exposes Core Service's link operations over public HTTP, reaching
 // Core via gRPC. It is the transport-layer replacement for the Core
 // Service's own httpapi.Handler from phases 1-3, now living in front of the
 // gRPC boundary instead of the domain layer directly.
 type Handler struct {
-	client  linkpb.LinkServiceClient
-	baseURL string
-	log     *zap.Logger
+	client    linkpb.LinkServiceClient
+	baseURL   string
+	log       *zap.Logger
+	publisher clickPublisher
 }
 
-func NewHandler(client linkpb.LinkServiceClient, baseURL string, log *zap.Logger) *Handler {
-	return &Handler{client: client, baseURL: baseURL, log: log}
+func NewHandler(client linkpb.LinkServiceClient, baseURL string, log *zap.Logger, publisher clickPublisher) *Handler {
+	return &Handler{client: client, baseURL: baseURL, log: log, publisher: publisher}
 }
 
 type createLinkRequest struct {
@@ -73,7 +82,25 @@ func (h *Handler) Redirect(c *gin.Context) {
 		return
 	}
 
+	h.publishClickAsync(code, c.ClientIP(), c.Request.UserAgent())
 	c.Redirect(http.StatusFound, l.GetLongUrl())
+}
+
+// publishClickAsync fires the click event on its own goroutine with a short,
+// independent timeout, so a slow or unavailable RabbitMQ never delays the
+// redirect response the client is waiting on. c.Request.Context() is not
+// used here on purpose: it's canceled once the HTTP response is written,
+// which would race with (and likely abort) this publish.
+func (h *Handler) publishClickAsync(code, ip, userAgent string) {
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+
+		ev := stats.ClickEvent{Code: code, OccurredAt: time.Now(), IP: ip, UserAgent: userAgent}
+		if err := h.publisher.Publish(ctx, ev); err != nil {
+			h.log.Error("publish click event failed", zap.String("code", code), zap.Error(err))
+		}
+	}()
 }
 
 // GetLinkInfo handles GET /links/:code.

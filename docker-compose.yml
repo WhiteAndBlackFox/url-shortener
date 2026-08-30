@@ -29,6 +29,25 @@ services:
       timeout: 5s
       retries: 10
 
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    environment:
+      # RabbitMQ restricts the built-in "guest" user to loopback connections
+      # only, which containers-to-container traffic never is - so a
+      # dedicated user is required for gateway/statservice to connect at all.
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
+    ports:
+      - "5672:5672"   # AMQP
+      - "15672:15672" # management UI
+    networks:
+      - urlshortner
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   migrate:
     image: migrate/migrate:v4.19.1
     volumes:
@@ -64,6 +83,30 @@ services:
       redis:
         condition: service_healthy
 
+  statservice:
+    build:
+      context: .
+      dockerfile: deployments/docker/statservice.Dockerfile
+      target: runtime
+    environment:
+      GRPC_ADDR: ":9091"
+      DATABASE_URL: ${DATABASE_URL}
+      DEBUG: ${DEBUG}
+      RABBITMQ_URL: ${RABBITMQ_URL}
+      CLICK_QUEUE: ${CLICK_QUEUE}
+      WORKER_COUNT: ${WORKER_COUNT}
+      BATCH_SIZE: ${BATCH_SIZE}
+      FLUSH_INTERVAL_MS: ${FLUSH_INTERVAL_MS}
+    ports:
+      - "9091:9091" # published for local debugging (e.g. grpcurl); not needed by gateway, which reaches statservice via the internal network
+    networks:
+      - urlshortner
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+
   gateway:
     build:
       context: .
@@ -72,14 +115,19 @@ services:
     environment:
       HTTP_ADDR: ${HTTP_ADDR}
       CORE_GRPC_ADDR: coreservice:9090
+      STAT_GRPC_ADDR: statservice:9091
       BASE_URL: ${BASE_URL}
       DEBUG: ${DEBUG}
+      RABBITMQ_URL: ${RABBITMQ_URL}
+      CLICK_QUEUE: ${CLICK_QUEUE}
     ports:
       - "8080:8080"
     networks:
       - urlshortner
     depends_on:
       - coreservice
+      - statservice
+      - rabbitmq
 
 volumes:
   pgdata:
