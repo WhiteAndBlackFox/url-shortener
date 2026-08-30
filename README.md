@@ -2,7 +2,7 @@
 
 A microservice URL shortener written in Go, built as a portfolio project to demonstrate a realistic service-oriented stack: three independently deployable Go services, PostgreSQL, Redis, RabbitMQ, gRPC for internal communication, a public REST API, and the DevOps scaffolding (Docker, CI, health checks, structured logging, request tracing) that goes with running them together.
 
-The project was built in eight incremental phases — each one shippable and demoable on its own. The full roadmap, the decisions made at each step and *why*, live in [`plans/plans.md`](plans/plans.md); this README covers what the system looks like now that it's finished, and how to run it.
+The project was built in eight incremental phases, each one shippable and demoable on its own — starting from a single REST+Postgres service and growing into the split, message-driven system described below. This README covers what the system looks like now that it's finished, why it's shaped this way, and how to run it.
 
 ## Architecture
 
@@ -29,7 +29,7 @@ flowchart LR
 
 ## Why it's shaped this way
 
-A few decisions that most shaped the design (full rationale for every phase is in [`plans/plans.md`](plans/plans.md)):
+A few decisions that most shaped the design:
 
 - **Monolith first, then split.** Core Service started as a self-contained REST+Postgres service (phase 1) before the Gateway/gRPC split (phase 4) — the business logic and API contract were proven stable before paying the cost of a network boundary between them.
 - **Gateway is the *only* public surface.** Once it existed, Core and Stat Service's REST/HTTP paths were retired entirely rather than kept around "just in case" — one contract per capability, not two overlapping ones.
@@ -126,4 +126,4 @@ deployments/docker/                      one Dockerfile per service
 
 ## Out of scope
 
-Auth, rate limiting, and TLS between internal services were explicitly left out — not oversights, just outside what this project set out to demonstrate. See the "stretch" phase note in `plans/plans.md` if you're curious what a next increment would look like.
+Auth, rate limiting, and TLS between internal services were explicitly left out — not oversights, just outside what this project set out to demonstrate. Natural next steps if this were to keep growing: API keys or JWT auth on link creation, per-IP rate limiting at the Gateway, and mTLS between the internal gRPC services.
