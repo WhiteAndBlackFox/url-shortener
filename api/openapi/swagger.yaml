@@ -28,6 +28,13 @@ definitions:
         example: http://localhost:8080/abc1234
         type: string
     type: object
+  internal_gateway_transport_http.readinessResponse:
+    properties:
+      core:
+        type: boolean
+      stat:
+        type: boolean
+    type: object
   internal_gateway_transport_http.statsResponse:
     properties:
       code:
@@ -149,6 +156,10 @@ paths:
           description: OK
           schema:
             $ref: '#/definitions/internal_gateway_transport_http.statsResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_gateway_transport_http.errorResponse'
         "500":
           description: Internal Server Error
           schema:
@@ -156,4 +167,22 @@ paths:
       summary: Get click statistics
       tags:
       - stats
+  /ready:
+    get:
+      description: Unlike /health (pure liveness), this actively checks Core Service
+        and Stat Service's own gRPC health endpoints.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_gateway_transport_http.readinessResponse'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/internal_gateway_transport_http.readinessResponse'
+      summary: Readiness check
+      tags:
+      - health
 swagger: "2.0"

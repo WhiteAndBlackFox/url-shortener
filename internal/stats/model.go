@@ -7,6 +7,14 @@ import "time"
 // queue on every successful redirect, Stat Service decodes it on the other
 // end. It intentionally has no behavior — it's a data shape, not domain logic.
 type ClickEvent struct {
+	// EventID is a Gateway-generated, per-click unique ID — the idempotency
+	// key that makes redelivery safe. RabbitMQ's at-least-once delivery
+	// (combined with Nack(requeue=true) on a transient write failure, or a
+	// timeout that fires right as a write actually succeeded) means the same
+	// event can legitimately be processed more than once; InsertBatch relies
+	// on a unique constraint on this column to make a duplicate a no-op
+	// instead of a duplicate row.
+	EventID    string    `json:"event_id"`
 	Code       string    `json:"code"`
 	OccurredAt time.Time `json:"occurred_at"`
 	IP         string    `json:"ip,omitempty"`

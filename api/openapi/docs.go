@@ -136,10 +136,42 @@ const docTemplate = `{
                             "$ref": "#/definitions/internal_gateway_transport_http.statsResponse"
                         }
                     },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/internal_gateway_transport_http.errorResponse"
+                        }
+                    },
                     "500": {
                         "description": "Internal Server Error",
                         "schema": {
                             "$ref": "#/definitions/internal_gateway_transport_http.errorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/ready": {
+            "get": {
+                "description": "Unlike /health (pure liveness), this actively checks Core Service and Stat Service's own gRPC health endpoints.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "health"
+                ],
+                "summary": "Readiness check",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_gateway_transport_http.readinessResponse"
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/internal_gateway_transport_http.readinessResponse"
                         }
                     }
                 }
@@ -214,6 +246,17 @@ const docTemplate = `{
                 "short_url": {
                     "type": "string",
                     "example": "http://localhost:8080/abc1234"
+                }
+            }
+        },
+        "internal_gateway_transport_http.readinessResponse": {
+            "type": "object",
+            "properties": {
+                "core": {
+                    "type": "boolean"
+                },
+                "stat": {
+                    "type": "boolean"
                 }
             }
         },

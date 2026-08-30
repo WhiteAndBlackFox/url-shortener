@@ -69,7 +69,7 @@ RabbitMQ's built-in `guest` account only accepts loopback connections, which con
 
 ## API
 
-`POST /links`, `GET /{code}` (redirect), `GET /links/{code}` (info), `GET /links/{code}/stats`, `GET /health`.
+`POST /links`, `GET /{code}` (redirect), `GET /links/{code}` (info), `GET /links/{code}/stats`, `GET /health`, `GET /ready`.
 
 Full interactive documentation (OpenAPI/Swagger, generated from code annotations — see `internal/gateway/transport/http/*.go`):
 
@@ -86,9 +86,18 @@ grpcurl -plaintext -d '{"url":"https://example.com"}' localhost:9090 link.v1.Lin
 
 ## Observability
 
-- **Health checks**: `GET /health` on the Gateway (liveness only — deliberately doesn't check downstream services, to avoid cascading restarts); Core/Stat Service speak the standard gRPC health protocol (`grpc.health.v1.Health`), checked via `grpc-health-probe` inside the container. All three are wired into `docker-compose`'s `healthcheck`/`depends_on: condition: service_healthy`.
+- **Health vs. readiness**: `GET /health` on the Gateway is pure liveness (is the process up) and never checks downstream services, so a Core/Stat outage doesn't get Gateway itself killed and restarted over something a restart wouldn't fix. `GET /ready` is the complementary readiness check — it actively calls Core/Stat Service's own gRPC health endpoints and reports 503 if either is down; `docker-compose`'s healthcheck for the gateway container uses `/ready`. Core/Stat Service speak the standard gRPC health protocol (`grpc.health.v1.Health`, checked via `grpc-health-probe` inside their containers) and, unlike a one-time status set at startup, a background monitor re-checks Postgres reachability every 10s and flips the reported status if it goes down mid-run — a dependency failure that starts *after* a clean boot is reflected, not just one caught during startup.
 - **Request tracing**: every HTTP request gets an `X-Request-Id` (reused if the caller sent one, generated otherwise), which then rides gRPC metadata into Core/Stat Service and an AMQP message header into RabbitMQ. Every `request`/`rpc` log line carries `request_id` — one ID greps across all three services' logs for a single user request.
 - **Structured logging** (zap, JSON) in every service.
+
+## Reliability
+
+A few things the click-tracking pipeline (Gateway → RabbitMQ → Stat Service → Postgres) does to survive the failure modes that async, at-least-once systems actually run into:
+
+- **RabbitMQ reconnect.** A consumer needs a live subscription; a producer just needs to succeed on the next call — so they're resilient in different ways. Stat Service's consumer runs a background loop (`internal/platform/rabbitmq.RunResilientConsumer`) that reconnects with capped exponential backoff on any drop, forwarding into a stable channel `worker.Pool` never even knows changed underneath it. The Gateway's publisher instead reconnects lazily: it only re-dials when a publish actually fails, retrying that one event once before giving up on it.
+- **Idempotent inserts.** Every click event carries a Gateway-generated `event_id`; `clicks` has a unique index on it and writes use `ON CONFLICT (event_id) DO NOTHING`. At-least-once delivery means the same event can legitimately be processed twice (a transient write failure gets nacked-and-requeued, or a flush's timeout can fire right as the write actually committed) — without this, that redelivery would silently double-count a click.
+- **Bounded retries, not an infinite loop.** The `link.clicks` queue is a quorum queue with a delivery limit (`internal/platform/rabbitmq.DefaultDeliveryLimit`); once a message has failed that many times, RabbitMQ routes it to `link.clicks.dlq` instead of redelivering forever. A permanent failure (Postgres unreachable, say) degrades to a bounded number of retries per message, not a tight loop burning CPU and flooding logs.
+- **Graceful shutdown that's actually bounded.** Every blocking shutdown step (gRPC `GracefulStop`, the worker pool draining, in-flight click-publish goroutines) is wrapped with a timeout (`internal/platform/shutdown.WaitTimeout`) — a stuck dependency degrades to a harder stop instead of hanging the process past the container orchestrator's SIGTERM-to-SIGKILL window. Stat Service's shutdown also cancels the RabbitMQ *consumer* specifically (not just closing the connection) so in-flight deliveries drain into the worker pool and get acked normally, instead of racing a connection teardown.
 
 ## Testing
 

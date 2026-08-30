@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -19,6 +20,7 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -47,14 +49,47 @@ func (f *fakeStatsClient) GetStats(ctx context.Context, in *statspb.GetStatsRequ
 	return f.getStatsFn(ctx, in)
 }
 
+// fakeHealthClient is a hand-written fake of grpc_health_v1.HealthClient,
+// used to drive ReadinessHandler without a real gRPC server.
+type fakeHealthClient struct {
+	status healthpb.HealthCheckResponse_ServingStatus
+	err    error
+}
+
+func (f *fakeHealthClient) Check(context.Context, *healthpb.HealthCheckRequest, ...grpc.CallOption) (*healthpb.HealthCheckResponse, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return &healthpb.HealthCheckResponse{Status: f.status}, nil
+}
+
+func (f *fakeHealthClient) Watch(context.Context, *healthpb.HealthCheckRequest, ...grpc.CallOption) (healthpb.Health_WatchClient, error) {
+	return nil, errors.New("fakeHealthClient: Watch not implemented")
+}
+
+func (f *fakeHealthClient) List(context.Context, *healthpb.HealthListRequest, ...grpc.CallOption) (*healthpb.HealthListResponse, error) {
+	return nil, errors.New("fakeHealthClient: List not implemented")
+}
+
+func servingHealthClient() *fakeHealthClient {
+	return &fakeHealthClient{status: healthpb.HealthCheckResponse_SERVING}
+}
+
 // newTestRouter builds a router against fakes only — no Postgres, no
 // bufconn, no RabbitMQ. Fast unit tests for the HTTP layer's own behavior
 // (status code mapping, request bodies, request-id propagation), as opposed
 // to link_integration_test.go, which exercises the real cross-service stack.
+// Core/Stat report healthy by default; tests exercising /ready specifically
+// override this via newTestRouterWithHealth.
 func newTestRouter(linkClient linkpb.LinkServiceClient, statsClient statspb.StatsServiceClient, pub *recordingPublisher) *gin.Engine {
+	return newTestRouterWithHealth(linkClient, statsClient, pub, servingHealthClient(), servingHealthClient())
+}
+
+func newTestRouterWithHealth(linkClient linkpb.LinkServiceClient, statsClient statspb.StatsServiceClient, pub *recordingPublisher, coreHealth, statHealth healthpb.HealthClient) *gin.Engine {
 	handler := httpapi.NewHandler(linkClient, "http://localhost:8080", zap.NewNop(), pub)
 	statsHandler := httpapi.NewStatsHandler(statsClient, zap.NewNop())
-	return httpapi.NewRouter(handler, statsHandler, zap.NewNop())
+	readinessHandler := httpapi.NewReadinessHandler(coreHealth, statHealth)
+	return httpapi.NewRouter(handler, statsHandler, readinessHandler, zap.NewNop())
 }
 
 func TestHealthEndpoint(t *testing.T) {
@@ -65,6 +100,43 @@ func TestHealthEndpoint(t *testing.T) {
 	router.ServeHTTP(rec, req)
 
 	require.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestReadyEndpoint_OKWhenBothDependenciesServing(t *testing.T) {
+	router := newTestRouterWithHealth(&fakeLinkClient{}, &fakeStatsClient{}, &recordingPublisher{},
+		servingHealthClient(), servingHealthClient())
+
+	req := httptest.NewRequest(http.MethodGet, "/ready", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestReadyEndpoint_UnavailableWhenADependencyIsDown(t *testing.T) {
+	router := newTestRouterWithHealth(&fakeLinkClient{}, &fakeStatsClient{}, &recordingPublisher{},
+		servingHealthClient(),
+		&fakeHealthClient{status: healthpb.HealthCheckResponse_NOT_SERVING},
+	)
+
+	req := httptest.NewRequest(http.MethodGet, "/ready", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
+}
+
+func TestReadyEndpoint_UnavailableWhenDependencyUnreachable(t *testing.T) {
+	router := newTestRouterWithHealth(&fakeLinkClient{}, &fakeStatsClient{}, &recordingPublisher{},
+		servingHealthClient(),
+		&fakeHealthClient{err: errors.New("connection refused")},
+	)
+
+	req := httptest.NewRequest(http.MethodGet, "/ready", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
 }
 
 func TestRequestID_GeneratedWhenAbsent(t *testing.T) {
@@ -230,4 +302,20 @@ func TestStatsHandler_GetStats_UpstreamErrorReturns500(t *testing.T) {
 	router.ServeHTTP(rec, req)
 
 	require.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+func TestStatsHandler_GetStats_UpstreamInvalidArgumentReturns400(t *testing.T) {
+	statsClient := &fakeStatsClient{
+		getStatsFn: func(context.Context, *statspb.GetStatsRequest) (*statspb.StatsResponse, error) {
+			return nil, status.Error(codes.InvalidArgument, "code is required")
+		},
+	}
+	router := newTestRouter(&fakeLinkClient{}, statsClient, &recordingPublisher{})
+
+	req := httptest.NewRequest(http.MethodGet, "/links/abc1234/stats", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code, "a client input error must not be reported as a 500")
+	require.Contains(t, rec.Body.String(), "code is required")
 }

@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"net/http"
+	"sync"
 	"time"
 
 	linkpb "URLShortener/api/proto/linkpb"
@@ -11,8 +12,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
 
 // clickPublisher is the narrow interface Handler needs from
@@ -30,10 +29,33 @@ type Handler struct {
 	baseURL   string
 	log       *zap.Logger
 	publisher clickPublisher
+
+	// publishWG tracks in-flight publishClickAsync goroutines. They're
+	// detached from the request lifecycle on purpose (see
+	// publishClickAsync), which means srv.Shutdown(ctx) alone doesn't wait
+	// for them — WaitPublishers does, so main.go can hold off closing the
+	// RabbitMQ publisher until every click that's still in flight has had a
+	// chance to actually publish.
+	publishWG sync.WaitGroup
 }
 
 func NewHandler(client linkpb.LinkServiceClient, baseURL string, log *zap.Logger, publisher clickPublisher) *Handler {
 	return &Handler{client: client, baseURL: baseURL, log: log, publisher: publisher}
+}
+
+// WaitPublishers blocks until every in-flight click-publish goroutine has
+// finished, or ctx is done — whichever comes first.
+func (h *Handler) WaitPublishers(ctx context.Context) {
+	done := make(chan struct{})
+	go func() {
+		h.publishWG.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-ctx.Done():
+	}
 }
 
 type createLinkRequest struct {
@@ -45,11 +67,6 @@ type linkResponse struct {
 	ShortURL  string    `json:"short_url" example:"http://localhost:8080/abc1234"`
 	LongURL   string    `json:"long_url" example:"https://example.com/some/long/path"`
 	CreatedAt time.Time `json:"created_at"`
-}
-
-// errorResponse is the JSON body returned for every non-2xx response.
-type errorResponse struct {
-	Error string `json:"error" example:"link: not found"`
 }
 
 func (h *Handler) newLinkResponse(l *linkpb.Link) linkResponse {
@@ -83,7 +100,7 @@ func (h *Handler) CreateLink(c *gin.Context) {
 	ctx := requestid.OutgoingContext(c.Request.Context())
 	l, err := h.client.CreateLink(ctx, &linkpb.CreateLinkRequest{Url: req.URL})
 	if err != nil {
-		h.handleRPCError(c, err)
+		writeRPCError(c, h.log, err)
 		return
 	}
 
@@ -105,7 +122,7 @@ func (h *Handler) Redirect(c *gin.Context) {
 	ctx := requestid.OutgoingContext(c.Request.Context())
 	l, err := h.client.GetLink(ctx, &linkpb.GetLinkRequest{Code: code})
 	if err != nil {
-		h.handleRPCError(c, err)
+		writeRPCError(c, h.log, err)
 		return
 	}
 
@@ -123,7 +140,9 @@ func (h *Handler) Redirect(c *gin.Context) {
 // A deferred recover keeps a bug in this path from crashing the whole
 // process — it runs detached from any request-scoped recovery middleware.
 func (h *Handler) publishClickAsync(requestID, code, ip, userAgent string) {
+	h.publishWG.Add(1)
 	go func() {
+		defer h.publishWG.Done()
 		defer func() {
 			if rec := recover(); rec != nil {
 				h.log.Error("panic in click publish goroutine", zap.Any("panic", rec), zap.String("code", code))
@@ -133,7 +152,12 @@ func (h *Handler) publishClickAsync(requestID, code, ip, userAgent string) {
 		ctx, cancel := context.WithTimeout(requestid.NewContext(context.Background(), requestID), 2*time.Second)
 		defer cancel()
 
-		ev := stats.ClickEvent{Code: code, OccurredAt: time.Now(), IP: ip, UserAgent: userAgent}
+		// EventID is a fresh ID minted here, deliberately not requestID: a
+		// caller-supplied X-Request-Id is untrusted and could be reused
+		// across genuinely distinct requests, which would make it unsafe as
+		// a dedup key (a repeat would look like a duplicate delivery and get
+		// silently dropped by InsertBatch's ON CONFLICT DO NOTHING).
+		ev := stats.ClickEvent{EventID: requestid.New(), Code: code, OccurredAt: time.Now(), IP: ip, UserAgent: userAgent}
 		if err := h.publisher.Publish(ctx, ev); err != nil {
 			h.log.Error("publish click event failed", zap.String("code", code), zap.Error(err))
 		}
@@ -156,28 +180,9 @@ func (h *Handler) GetLinkInfo(c *gin.Context) {
 	ctx := requestid.OutgoingContext(c.Request.Context())
 	l, err := h.client.GetLink(ctx, &linkpb.GetLinkRequest{Code: code})
 	if err != nil {
-		h.handleRPCError(c, err)
+		writeRPCError(c, h.log, err)
 		return
 	}
 
 	c.JSON(http.StatusOK, h.newLinkResponse(l))
-}
-
-// handleRPCError translates a gRPC status error from Core Service into an
-// HTTP response. Core's toStatusError (transport/grpc/link.go) puts the
-// domain error message on InvalidArgument/NotFound, so those messages carry
-// through to the client unchanged; anything else is hidden behind a generic
-// message and logged here instead.
-func (h *Handler) handleRPCError(c *gin.Context, err error) {
-	st := status.Convert(err)
-
-	switch st.Code() {
-	case codes.InvalidArgument:
-		c.JSON(http.StatusBadRequest, errorResponse{Error: st.Message()})
-	case codes.NotFound:
-		c.JSON(http.StatusNotFound, errorResponse{Error: st.Message()})
-	default:
-		h.log.Error("core service rpc failed", zap.Error(err))
-		c.JSON(http.StatusInternalServerError, errorResponse{Error: "internal server error"})
-	}
 }

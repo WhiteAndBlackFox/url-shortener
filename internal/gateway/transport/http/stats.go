@@ -36,6 +36,7 @@ type statsResponse struct {
 //	@Produce		json
 //	@Param			code	path		string	true	"Short code"
 //	@Success		200		{object}	statsResponse
+//	@Failure		400		{object}	errorResponse
 //	@Failure		500		{object}	errorResponse
 //	@Router			/links/{code}/stats [get]
 func (h *StatsHandler) GetStats(c *gin.Context) {
@@ -44,8 +45,7 @@ func (h *StatsHandler) GetStats(c *gin.Context) {
 	ctx := requestid.OutgoingContext(c.Request.Context())
 	resp, err := h.client.GetStats(ctx, &statspb.GetStatsRequest{Code: code})
 	if err != nil {
-		h.log.Error("stat service rpc failed", zap.Error(err))
-		c.JSON(http.StatusInternalServerError, errorResponse{Error: "internal server error"})
+		writeRPCError(c, h.log, err)
 		return
 	}
 

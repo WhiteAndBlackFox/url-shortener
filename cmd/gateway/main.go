@@ -14,9 +14,9 @@ import (
 	httpapi "URLShortener/internal/gateway/transport/http"
 	"URLShortener/internal/platform/config"
 	"URLShortener/internal/platform/logger"
-	"URLShortener/internal/platform/rabbitmq"
 
 	"go.uber.org/zap"
+	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 )
 
 // @title			URL Shortener API
@@ -47,23 +47,22 @@ func main() {
 	}
 	defer func() { _ = statConn.Close() }()
 
-	mqConn, mqCh, err := rabbitmq.Dial(cfg.RabbitMQURL)
+	// ClickPublisher owns its own RabbitMQ connection end-to-end (dial,
+	// declare, reconnect-on-failure) — see internal/gateway/publisher.
+	clickPublisher, err := publisher.New(cfg.RabbitMQURL, cfg.ClickQueue)
 	if err != nil {
-		log.Fatal("dial rabbitmq", zap.Error(err))
+		log.Fatal("connect click publisher", zap.Error(err))
 	}
-	defer func() { _ = mqCh.Close() }()
-	defer func() { _ = mqConn.Close() }()
-
-	if _, err := rabbitmq.DeclareQueue(mqCh, cfg.ClickQueue); err != nil {
-		log.Fatal("declare click queue", zap.Error(err))
-	}
-	clickPublisher := publisher.New(mqCh, cfg.ClickQueue)
 
 	linkClient := linkpb.NewLinkServiceClient(coreConn)
 	statsClient := statspb.NewStatsServiceClient(statConn)
 	handler := httpapi.NewHandler(linkClient, cfg.BaseURL, log, clickPublisher)
 	statsHandler := httpapi.NewStatsHandler(statsClient, log)
-	router := httpapi.NewRouter(handler, statsHandler, log)
+	readinessHandler := httpapi.NewReadinessHandler(
+		healthpb.NewHealthClient(coreConn),
+		healthpb.NewHealthClient(statConn),
+	)
+	router := httpapi.NewRouter(handler, statsHandler, readinessHandler, log)
 
 	srv := &http.Server{
 		Addr:    cfg.HTTPAddr,
@@ -89,5 +88,17 @@ func main() {
 
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Error("graceful shutdown failed", zap.Error(err))
+	}
+
+	// srv.Shutdown only waits for in-flight HTTP handlers, but Redirect's
+	// click-publish goroutine is deliberately detached from the request
+	// lifecycle (see Handler.publishClickAsync) so it can outlive the
+	// response that spawned it — wait for those too before tearing down the
+	// publisher, or a click from a request that finished right at shutdown
+	// would silently fail to publish.
+	handler.WaitPublishers(shutdownCtx)
+
+	if err := clickPublisher.Close(); err != nil {
+		log.Error("close click publisher", zap.Error(err))
 	}
 }

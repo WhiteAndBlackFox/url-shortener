@@ -16,7 +16,12 @@ import (
 // health-checking protocol (grpc_health_v1), which is what docker-compose's
 // healthcheck probes via grpc-health-probe — see
 // deployments/docker/statservice.Dockerfile.
-func NewServer(statsServer *StatsServer, log *zap.Logger) *grpc.Server {
+//
+// The returned *health.Server is handed back to the caller (not just kept
+// internal) so main.go can feed it into healthmonitor.Run — SetServingStatus
+// here only covers "did we start up successfully", not "are we still healthy
+// now"; the periodic monitor is what keeps it truthful afterward.
+func NewServer(statsServer *StatsServer, log *zap.Logger) (*grpc.Server, *health.Server) {
 	srv := grpc.NewServer(
 		grpc.ChainUnaryInterceptor(grpcmiddleware.Recovery(log), grpcmiddleware.RequestID(), grpcmiddleware.Logging(log)),
 	)
@@ -36,5 +41,5 @@ func NewServer(statsServer *StatsServer, log *zap.Logger) *grpc.Server {
 	// for that same local debugging).
 	reflection.Register(srv)
 
-	return srv
+	return srv, healthServer
 }

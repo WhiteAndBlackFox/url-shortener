@@ -155,36 +155,72 @@ func TestPool_NacksAndRequeuesOnWriteFailure(t *testing.T) {
 	wg.Wait()
 }
 
-// panicRecorder simulates an unexpected bug in the write path (as opposed
-// to an ordinary error) to prove the worker's recover() keeps a single bad
-// message from taking down the whole statservice process.
-type panicRecorder struct{}
+// panicThenSucceedRecorder simulates an unexpected bug in the write path
+// (as opposed to an ordinary error) on its first call, then behaves
+// normally — proving both that a panic can't crash the whole statservice
+// process, and that it doesn't leak the batch's deliveries or permanently
+// kill the worker either: the worker must nack-and-requeue the panicking
+// batch and keep processing later ones.
+type panicThenSucceedRecorder struct {
+	mu         sync.Mutex
+	panicCalls int
+	callsSoFar int
+	batches    [][]stats.ClickEvent
+}
 
-func (panicRecorder) RecordClicks(context.Context, []stats.ClickEvent) error {
-	panic("boom")
+func (r *panicThenSucceedRecorder) RecordClicks(_ context.Context, events []stats.ClickEvent) error {
+	r.mu.Lock()
+	r.callsSoFar++
+	shouldPanic := r.callsSoFar <= r.panicCalls
+	r.mu.Unlock()
+
+	if shouldPanic {
+		panic("boom")
+	}
+
+	r.mu.Lock()
+	batch := make([]stats.ClickEvent, len(events))
+	copy(batch, events)
+	r.batches = append(r.batches, batch)
+	r.mu.Unlock()
+	return nil
 }
 
 func TestPool_SurvivesPanicInRecorder(t *testing.T) {
-	pool := worker.NewPool(1, 1, time.Hour, panicRecorder{}, zap.NewNop())
+	recorder := &panicThenSucceedRecorder{panicCalls: 1}
+	pool := worker.NewPool(1, 1, time.Hour, recorder, zap.NewNop())
 
 	deliveries := make(chan amqp.Delivery)
 	wg := pool.Start(deliveries)
 
-	ack := &fakeAcknowledger{}
-	deliveries <- newDelivery(t, ack, 1, stats.ClickEvent{Code: "abc1234", OccurredAt: time.Now()})
+	// First delivery: the recorder panics while handling it. If the panic
+	// weren't recovered close to the point of failure, it would either crash
+	// this whole test binary (an unrecovered goroutine panic takes down the
+	// process) or leak this delivery unacknowledged forever.
+	ack1 := &fakeAcknowledger{}
+	deliveries <- newDelivery(t, ack1, 1, stats.ClickEvent{Code: "abc1234", OccurredAt: time.Now()})
 
-	// If the panic weren't recovered, it would crash this whole test binary
-	// (an unrecovered goroutine panic takes down the process), failing every
-	// test in the package, not just this one. wg.Wait() returning at all is
-	// the proof the worker's recover() worked, not just this assertion.
-	done := make(chan struct{})
-	go func() { wg.Wait(); close(done) }()
+	require.Eventually(t, func() bool {
+		_, nacked := ack1.counts()
+		return nacked == 1
+	}, time.Second, 10*time.Millisecond, "the panicking batch's delivery must be nacked, not leaked")
 
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("worker did not exit after a panic in the recorder")
-	}
+	ack1.mu.Lock()
+	require.True(t, ack1.requeue[0], "a panic is treated like any other transient write failure: requeue it")
+	ack1.mu.Unlock()
+
+	// Second delivery, sent after the panic: proves the worker is still
+	// alive and processing, not just that the process didn't crash.
+	ack2 := &fakeAcknowledger{}
+	deliveries <- newDelivery(t, ack2, 2, stats.ClickEvent{Code: "def5678", OccurredAt: time.Now()})
+
+	require.Eventually(t, func() bool {
+		acked, _ := ack2.counts()
+		return acked == 1
+	}, time.Second, 10*time.Millisecond, "the worker must keep processing after recovering from a panic")
+
+	close(deliveries)
+	wg.Wait()
 }
 
 func TestPool_DiscardsMalformedMessageWithoutRequeue(t *testing.T) {

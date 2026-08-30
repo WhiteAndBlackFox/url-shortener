@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sync"
 	"time"
 
@@ -135,10 +136,7 @@ func (p *Pool) flush(batch []pending) []pending {
 		events[i] = item.event
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	if err := p.recorder.RecordClicks(ctx, events); err != nil {
+	if err := p.recordClicks(events); err != nil {
 		p.log.Error("batch write failed, requeueing", zap.Int("batch_size", len(batch)), zap.Error(err))
 		for _, item := range batch {
 			_ = item.delivery.Nack(false, true) // requeue: transient DB error, worth retrying
@@ -151,4 +149,22 @@ func (p *Pool) flush(batch []pending) []pending {
 	}
 	p.log.Debug("flushed click batch", zap.Int("batch_size", len(batch)))
 	return batch[:0]
+}
+
+// recordClicks calls the recorder with a bounded timeout, converting a
+// panic (e.g. a driver/reflection bug) into a plain error so flush's
+// nack-and-requeue path handles it exactly like any other write failure.
+// Without this, a panic here would unwind past the ack/nack loop entirely,
+// leaving the batch's deliveries permanently unacknowledged on the channel
+// even though run()'s outer recover() stops the process from crashing.
+func (p *Pool) recordClicks(events []stats.ClickEvent) (err error) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			err = fmt.Errorf("panic: %v", rec)
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return p.recorder.RecordClicks(ctx, events)
 }

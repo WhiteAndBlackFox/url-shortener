@@ -5,18 +5,28 @@ import (
 	"net"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"URLShortener/internal/platform/config"
+	"URLShortener/internal/platform/healthmonitor"
 	"URLShortener/internal/platform/logger"
 	platformpg "URLShortener/internal/platform/postgres"
 	"URLShortener/internal/platform/rabbitmq"
+	"URLShortener/internal/platform/shutdown"
+	"URLShortener/internal/stats"
 	statsrepo "URLShortener/internal/statservice/repository/postgres"
 	statsgrpc "URLShortener/internal/statservice/transport/grpc"
 	"URLShortener/internal/statservice/worker"
-	"URLShortener/internal/stats"
 
+	amqp "github.com/rabbitmq/amqp091-go"
 	"go.uber.org/zap"
 )
+
+// consumerTag identifies this consumer to RabbitMQ so shutdown can cancel
+// exactly this subscription (Channel.Cancel) rather than tearing down the
+// whole connection before in-flight work is settled — see
+// internal/platform/rabbitmq.RunResilientConsumer.
+const consumerTag = "statservice-worker-pool"
 
 func main() {
 	cfg := config.LoadStat()
@@ -35,27 +45,14 @@ func main() {
 		log.Fatal("connect to postgres", zap.Error(err))
 	}
 
-	mqConn, mqCh, err := rabbitmq.Dial(cfg.RabbitMQURL)
-	if err != nil {
-		log.Fatal("dial rabbitmq", zap.Error(err))
-	}
+	// consumerCtx (not ctx directly) so shutdown can cancel just the RabbitMQ
+	// consumer first, and separately wait for the worker pool to drain,
+	// before touching the gRPC server.
+	consumerCtx, cancelConsumer := context.WithCancel(context.Background())
+	defer cancelConsumer()
 
-	if _, err := rabbitmq.DeclareQueue(mqCh, cfg.ClickQueue); err != nil {
-		log.Fatal("declare click queue", zap.Error(err))
-	}
-
-	deliveries, err := mqCh.Consume(
-		cfg.ClickQueue,
-		"",    // consumer tag: auto-generated
-		false, // autoAck: false — the worker pool acks only after a batch is durably written
-		false, // exclusive
-		false, // noLocal (unused by RabbitMQ)
-		false, // noWait
-		nil,   // args
-	)
-	if err != nil {
-		log.Fatal("consume click queue", zap.Error(err))
-	}
+	deliveries := make(chan amqp.Delivery)
+	go rabbitmq.RunResilientConsumer(consumerCtx, cfg.RabbitMQURL, cfg.ClickQueue, consumerTag, log, deliveries)
 
 	repo := statsrepo.New(db)
 	service := stats.NewService(repo)
@@ -63,8 +60,26 @@ func main() {
 	pool := worker.NewPool(cfg.WorkerCount, cfg.BatchSize, cfg.FlushInterval, service, log)
 	workersDone := pool.Start(deliveries)
 
-	statsServer := statsgrpc.NewStatsServer(service)
-	grpcServer := statsgrpc.NewServer(statsServer, log)
+	statsServer := statsgrpc.NewStatsServer(service, log)
+	grpcServer, healthServer := statsgrpc.NewServer(statsServer, log)
+
+	// Keeps the gRPC health status truthful after startup, not just at it.
+	// RabbitMQ reachability is deliberately excluded: RunResilientConsumer
+	// already self-heals from broker outages in the background, and
+	// flapping the health status over ordinary reconnect churn would be
+	// counterproductive (an orchestrator restart mid-backoff just resets
+	// the backoff timer, it doesn't fix the underlying outage). Postgres,
+	// on the other hand, is a hard dependency Stat Service cannot serve
+	// reads without.
+	go healthmonitor.Run(ctx, healthServer, 10*time.Second, log, map[string]healthmonitor.Checker{
+		"postgres": func(ctx context.Context) error {
+			sqlDB, err := db.DB()
+			if err != nil {
+				return err
+			}
+			return sqlDB.PingContext(ctx)
+		},
+	})
 
 	lis, err := net.Listen("tcp", cfg.GRPCAddr)
 	if err != nil {
@@ -85,12 +100,17 @@ func main() {
 	<-ctx.Done()
 	log.Info("shutting down")
 
-	// Closing the channel/connection closes the deliveries channel, which is
-	// how the worker pool's goroutines learn to flush their pending batch
-	// and exit — see worker.Pool.run.
-	_ = mqCh.Close()
-	_ = mqConn.Close()
-	workersDone.Wait()
+	// Cancel the RabbitMQ consumer (not just close the channel/connection):
+	// this stops new deliveries while letting in-flight ones drain into the
+	// worker pool and get acked normally, so a worker's final flush never
+	// has to Ack/Nack on an already-closed channel.
+	cancelConsumer()
+	if !shutdown.WaitTimeout(10*time.Second, workersDone.Wait) {
+		log.Warn("worker pool did not finish draining in time, shutting down anyway")
+	}
 
-	grpcServer.GracefulStop()
+	if !shutdown.WaitTimeout(5*time.Second, grpcServer.GracefulStop) {
+		log.Warn("grpc graceful stop timed out, forcing")
+		grpcServer.Stop()
+	}
 }

@@ -48,13 +48,13 @@ func TestGetStats_ThroughGateway(t *testing.T) {
 
 	now := time.Now().UTC().Truncate(time.Second)
 	require.NoError(t, repo.InsertBatch(ctx, []stats.ClickEvent{
-		{Code: code, OccurredAt: now},
-		{Code: code, OccurredAt: now.Add(time.Minute)},
+		{EventID: "gwstats1-evt-1", Code: code, OccurredAt: now},
+		{EventID: "gwstats1-evt-2", Code: code, OccurredAt: now.Add(time.Minute)},
 	}))
 
 	service := stats.NewService(repo)
-	statsServer := statsgrpc.NewStatsServer(service)
-	grpcServer := statsgrpc.NewServer(statsServer, zap.NewNop())
+	statsServer := statsgrpc.NewStatsServer(service, zap.NewNop())
+	grpcServer, _ := statsgrpc.NewServer(statsServer, zap.NewNop())
 
 	const bufSize = 1024 * 1024
 	lis := bufconn.Listen(bufSize)
@@ -71,7 +71,8 @@ func TestGetStats_ThroughGateway(t *testing.T) {
 
 	statsClient := statspb.NewStatsServiceClient(conn)
 	statsHandler := httpapi.NewStatsHandler(statsClient, zap.NewNop())
-	router := httpapi.NewRouter(httpapi.NewHandler(nil, "http://localhost:8080", zap.NewNop(), nil), statsHandler, zap.NewNop())
+	readinessHandler := httpapi.NewReadinessHandler(nil, nil) // not exercised by this test
+	router := httpapi.NewRouter(httpapi.NewHandler(nil, "http://localhost:8080", zap.NewNop(), nil), statsHandler, readinessHandler, zap.NewNop())
 
 	req := httptest.NewRequest(http.MethodGet, "/links/"+code+"/stats", nil)
 	rec := httptest.NewRecorder()

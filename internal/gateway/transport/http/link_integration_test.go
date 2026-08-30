@@ -76,8 +76,8 @@ func newTestGatewayRouter(t *testing.T) (*gin.Engine, *gorm.DB, *recordingPublis
 
 	repo := postgresrepo.New(db)
 	service := link.NewService(repo)
-	linkServer := coregrpc.NewLinkServer(service)
-	grpcServer := coregrpc.NewServer(linkServer, zap.NewNop())
+	linkServer := coregrpc.NewLinkServer(service, zap.NewNop())
+	grpcServer, _ := coregrpc.NewServer(linkServer, zap.NewNop())
 
 	const bufSize = 1024 * 1024
 	lis := bufconn.Listen(bufSize)
@@ -96,7 +96,8 @@ func newTestGatewayRouter(t *testing.T) (*gin.Engine, *gorm.DB, *recordingPublis
 	pub := &recordingPublisher{}
 	handler := httpapi.NewHandler(linkClient, "http://localhost:8080", zap.NewNop(), pub)
 	statsHandler := httpapi.NewStatsHandler(nil, zap.NewNop()) // not exercised by these tests
-	return httpapi.NewRouter(handler, statsHandler, zap.NewNop()), db, pub
+	readinessHandler := httpapi.NewReadinessHandler(nil, nil)  // not exercised by these tests
+	return httpapi.NewRouter(handler, statsHandler, readinessHandler, zap.NewNop()), db, pub
 }
 
 func TestCreateLink_ThenRedirectAndInfo(t *testing.T) {

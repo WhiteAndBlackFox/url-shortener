@@ -9,6 +9,7 @@ import (
 	"URLShortener/internal/link"
 
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -36,7 +37,7 @@ func (r *fakeRepo) GetByCode(_ context.Context, code string) (*link.Link, error)
 
 func newTestServer() *coregrpc.LinkServer {
 	service := link.NewService(newFakeRepo())
-	return coregrpc.NewLinkServer(service)
+	return coregrpc.NewLinkServer(service, zap.NewNop())
 }
 
 func TestLinkServer_CreateLink(t *testing.T) {
@@ -63,6 +64,26 @@ func TestLinkServer_GetLink_NotFound(t *testing.T) {
 	_, err := srv.GetLink(context.Background(), &linkpb.GetLinkRequest{Code: "doesnotexist"})
 	require.Error(t, err)
 	require.Equal(t, codes.NotFound, status.Code(err))
+}
+
+// cancelingRepo simulates a repository call that observes ctx cancellation
+// (as a real Postgres/gorm call would) instead of an internal server bug.
+type cancelingRepo struct{}
+
+func (cancelingRepo) Create(ctx context.Context, _ *link.Link) error { return ctx.Err() }
+func (cancelingRepo) GetByCode(ctx context.Context, _ string) (*link.Link, error) {
+	return nil, ctx.Err()
+}
+
+func TestLinkServer_GetLink_ContextCanceledIsNotInternal(t *testing.T) {
+	srv := coregrpc.NewLinkServer(link.NewService(cancelingRepo{}), zap.NewNop())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := srv.GetLink(ctx, &linkpb.GetLinkRequest{Code: "abc1234"})
+	require.Error(t, err)
+	require.Equal(t, codes.Canceled, status.Code(err), "a client cancellation is not a server bug — must not surface as codes.Internal")
 }
 
 func TestLinkServer_CreateThenGetLink(t *testing.T) {
