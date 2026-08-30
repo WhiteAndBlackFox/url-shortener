@@ -155,6 +155,38 @@ func TestPool_NacksAndRequeuesOnWriteFailure(t *testing.T) {
 	wg.Wait()
 }
 
+// panicRecorder simulates an unexpected bug in the write path (as opposed
+// to an ordinary error) to prove the worker's recover() keeps a single bad
+// message from taking down the whole statservice process.
+type panicRecorder struct{}
+
+func (panicRecorder) RecordClicks(context.Context, []stats.ClickEvent) error {
+	panic("boom")
+}
+
+func TestPool_SurvivesPanicInRecorder(t *testing.T) {
+	pool := worker.NewPool(1, 1, time.Hour, panicRecorder{}, zap.NewNop())
+
+	deliveries := make(chan amqp.Delivery)
+	wg := pool.Start(deliveries)
+
+	ack := &fakeAcknowledger{}
+	deliveries <- newDelivery(t, ack, 1, stats.ClickEvent{Code: "abc1234", OccurredAt: time.Now()})
+
+	// If the panic weren't recovered, it would crash this whole test binary
+	// (an unrecovered goroutine panic takes down the process), failing every
+	// test in the package, not just this one. wg.Wait() returning at all is
+	// the proof the worker's recover() worked, not just this assertion.
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("worker did not exit after a panic in the recorder")
+	}
+}
+
 func TestPool_DiscardsMalformedMessageWithoutRequeue(t *testing.T) {
 	recorder := &fakeRecorder{}
 	pool := worker.NewPool(1, 1, time.Hour, recorder, zap.NewNop())

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	linkpb "URLShortener/api/proto/linkpb"
+	"URLShortener/internal/platform/requestid"
 	"URLShortener/internal/stats"
 
 	"github.com/gin-gonic/gin"
@@ -63,7 +64,8 @@ func (h *Handler) CreateLink(c *gin.Context) {
 		return
 	}
 
-	l, err := h.client.CreateLink(c.Request.Context(), &linkpb.CreateLinkRequest{Url: req.URL})
+	ctx := requestid.OutgoingContext(c.Request.Context())
+	l, err := h.client.CreateLink(ctx, &linkpb.CreateLinkRequest{Url: req.URL})
 	if err != nil {
 		h.handleRPCError(c, err)
 		return
@@ -76,24 +78,35 @@ func (h *Handler) CreateLink(c *gin.Context) {
 func (h *Handler) Redirect(c *gin.Context) {
 	code := c.Param("code")
 
-	l, err := h.client.GetLink(c.Request.Context(), &linkpb.GetLinkRequest{Code: code})
+	ctx := requestid.OutgoingContext(c.Request.Context())
+	l, err := h.client.GetLink(ctx, &linkpb.GetLinkRequest{Code: code})
 	if err != nil {
 		h.handleRPCError(c, err)
 		return
 	}
 
-	h.publishClickAsync(code, c.ClientIP(), c.Request.UserAgent())
+	h.publishClickAsync(requestid.FromContext(c.Request.Context()), code, c.ClientIP(), c.Request.UserAgent())
 	c.Redirect(http.StatusFound, l.GetLongUrl())
 }
 
 // publishClickAsync fires the click event on its own goroutine with a short,
 // independent timeout, so a slow or unavailable RabbitMQ never delays the
-// redirect response the client is waiting on. c.Request.Context() is not
-// used here on purpose: it's canceled once the HTTP response is written,
-// which would race with (and likely abort) this publish.
-func (h *Handler) publishClickAsync(code, ip, userAgent string) {
+// redirect response the client is waiting on. context.Background() (not
+// c.Request.Context()) is the base here on purpose: the request context is
+// canceled once the HTTP response is written, which would race with (and
+// likely abort) this publish — requestID is threaded through explicitly
+// since it's the one piece of the request context still needed downstream.
+// A deferred recover keeps a bug in this path from crashing the whole
+// process — it runs detached from any request-scoped recovery middleware.
+func (h *Handler) publishClickAsync(requestID, code, ip, userAgent string) {
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer func() {
+			if rec := recover(); rec != nil {
+				h.log.Error("panic in click publish goroutine", zap.Any("panic", rec), zap.String("code", code))
+			}
+		}()
+
+		ctx, cancel := context.WithTimeout(requestid.NewContext(context.Background(), requestID), 2*time.Second)
 		defer cancel()
 
 		ev := stats.ClickEvent{Code: code, OccurredAt: time.Now(), IP: ip, UserAgent: userAgent}
@@ -107,7 +120,8 @@ func (h *Handler) publishClickAsync(code, ip, userAgent string) {
 func (h *Handler) GetLinkInfo(c *gin.Context) {
 	code := c.Param("code")
 
-	l, err := h.client.GetLink(c.Request.Context(), &linkpb.GetLinkRequest{Code: code})
+	ctx := requestid.OutgoingContext(c.Request.Context())
+	l, err := h.client.GetLink(ctx, &linkpb.GetLinkRequest{Code: code})
 	if err != nil {
 		h.handleRPCError(c, err)
 		return

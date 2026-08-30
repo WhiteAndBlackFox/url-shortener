@@ -82,6 +82,11 @@ services:
         condition: service_completed_successfully
       redis:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "grpc-health-probe", "-addr=:9090"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
   statservice:
     build:
@@ -106,6 +111,11 @@ services:
         condition: service_completed_successfully
       rabbitmq:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "grpc-health-probe", "-addr=:9091"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
   gateway:
     build:
@@ -125,9 +135,17 @@ services:
     networks:
       - urlshortner
     depends_on:
-      - coreservice
-      - statservice
-      - rabbitmq
+      coreservice:
+        condition: service_healthy
+      statservice:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
 volumes:
   pgdata:

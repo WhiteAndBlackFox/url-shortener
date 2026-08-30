@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"time"
 
+	"URLShortener/internal/platform/requestid"
+
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 )
@@ -25,7 +27,25 @@ func Recovery(log *zap.Logger) gin.HandlerFunc {
 	}
 }
 
-// RequestLogger logs method, path, status and latency for every request.
+// RequestID is the origin of the request ID that flows through every hop in
+// the system (see internal/platform/requestid): it reuses the caller's
+// X-Request-Id header if present, otherwise mints a new one, puts it on the
+// request context (so handlers can forward it over gRPC) and echoes it back
+// on the response.
+func RequestID() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		id := c.GetHeader(requestid.HTTPHeader)
+		if id == "" {
+			id = requestid.New()
+		}
+		c.Request = c.Request.WithContext(requestid.NewContext(c.Request.Context(), id))
+		c.Writer.Header().Set(requestid.HTTPHeader, id)
+		c.Next()
+	}
+}
+
+// RequestLogger logs method, path, status, latency and the request ID for
+// every request.
 func RequestLogger(log *zap.Logger) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		start := time.Now()
@@ -35,6 +55,7 @@ func RequestLogger(log *zap.Logger) gin.HandlerFunc {
 			zap.String("method", c.Request.Method),
 			zap.String("path", c.Request.URL.Path),
 			zap.Int("status", c.Writer.Status()),
+			zap.String("request_id", requestid.FromContext(c.Request.Context())),
 			zap.Duration("latency", time.Since(start)),
 		)
 	}

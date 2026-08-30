@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"URLShortener/internal/platform/requestid"
 	"URLShortener/internal/stats"
 
 	amqp "github.com/rabbitmq/amqp091-go"
@@ -67,6 +68,16 @@ type pending struct {
 }
 
 func (p *Pool) run(deliveries <-chan amqp.Delivery) {
+	// A worker runs detached from any request-scoped recovery middleware, so
+	// without this, a bug triggered by one bad message would crash the whole
+	// process instead of just costing this one worker (the rest of the pool
+	// keeps running; that degradation is loud in the logs, not silent).
+	defer func() {
+		if rec := recover(); rec != nil {
+			p.log.Error("panic in worker, this worker is exiting", zap.Any("panic", rec))
+		}
+	}()
+
 	batch := make([]pending, 0, p.batchSize)
 	ticker := time.NewTicker(p.flushInterval)
 	defer ticker.Stop()
@@ -81,7 +92,10 @@ func (p *Pool) run(deliveries <-chan amqp.Delivery) {
 
 			var ev stats.ClickEvent
 			if err := json.Unmarshal(d.Body, &ev); err != nil {
-				p.log.Error("discarding malformed click event", zap.Error(err))
+				p.log.Error("discarding malformed click event",
+					zap.String("request_id", headerRequestID(d)),
+					zap.Error(err),
+				)
 				_ = d.Nack(false, false) // don't requeue: it will never decode successfully
 				continue
 			}
@@ -97,6 +111,16 @@ func (p *Pool) run(deliveries <-chan amqp.Delivery) {
 			}
 		}
 	}
+}
+
+// headerRequestID reads the x-request-id header Gateway attaches when
+// publishing (see internal/gateway/publisher) off a single delivery. Only
+// used for the per-message decode-failure log: once messages are grouped
+// into a batch they typically span multiple unrelated requests, so a single
+// "request_id" field stops being a meaningful thing to log per-batch.
+func headerRequestID(d amqp.Delivery) string {
+	v, _ := d.Headers[requestid.Key].(string)
+	return v
 }
 
 // flush writes the batch to Postgres and acks/nacks every delivery in it

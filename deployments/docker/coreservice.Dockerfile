@@ -1,12 +1,17 @@
 ## base: shared by dev and builder - toolchain + downloaded deps only.
 ## Copying go.mod/go.sum before any other source means this layer (and the
 ## go mod download layer) is cached as long as dependencies don't change.
+## grpc-health-probe is installed here (not just in "builder") so both the
+## dev (hot-reload) and runtime images can serve docker-compose's
+## healthcheck, which execs this binary against the gRPC health service
+## registered in transport/grpc/server.go.
 FROM golang:1.26-alpine AS base
 
 WORKDIR /src
 
 COPY go.mod go.sum ./
 RUN go mod download
+RUN go install github.com/grpc-ecosystem/grpc-health-probe@v0.4.24
 
 ## dev: base + air, for local hot-reload only. Source is bind-mounted at
 ## runtime (see docker-compose.override.yml), not baked into the image, so
@@ -36,6 +41,7 @@ RUN apk add --no-cache ca-certificates && \
     adduser -D -u 10001 appuser
 
 COPY --from=builder /out/coreservice /usr/local/bin/coreservice
+COPY --from=builder /root/go/bin/grpc-health-probe /usr/local/bin/grpc-health-probe
 
 USER appuser
 EXPOSE 9090

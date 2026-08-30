@@ -5,6 +5,7 @@ import (
 	"time"
 
 	statspb "URLShortener/api/proto/statspb"
+	"URLShortener/internal/platform/requestid"
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
@@ -31,7 +32,8 @@ type statsResponse struct {
 func (h *StatsHandler) GetStats(c *gin.Context) {
 	code := c.Param("code")
 
-	resp, err := h.client.GetStats(c.Request.Context(), &statspb.GetStatsRequest{Code: code})
+	ctx := requestid.OutgoingContext(c.Request.Context())
+	resp, err := h.client.GetStats(ctx, &statspb.GetStatsRequest{Code: code})
 	if err != nil {
 		h.log.Error("stat service rpc failed", zap.Error(err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
